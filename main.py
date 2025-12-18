@@ -640,6 +640,7 @@ class ImageCompressor:
                 
                 # Open image
                 img = Image.open(filepath)
+                original_mode = img.mode
                 
                 # Resize if enabled
                 if resize and img.width > max_width:
@@ -670,23 +671,81 @@ class ImageCompressor:
                     output_path = os.path.join(out_dir, f"{base}_compressed.jpg")
                     save_format = 'JPEG'
                 
-                # Convert to RGB for JPEG
-                if save_format == 'JPEG' and img.mode in ('RGBA', 'LA', 'P'):
-                    background = Image.new('RGB', img.size, (255, 255, 255))
-                    if img.mode == 'P':
-                        img = img.convert('RGBA')
-                    if img.mode == 'RGBA':
-                        background.paste(img, mask=img.split()[-1])
-                    img = background
-                elif save_format == 'JPEG' and img.mode != 'RGB':
-                    img = img.convert('RGB')
+                # ============================================
+                # AGGRESSIVE COMPRESSION (TinyPNG-style)
+                # ============================================
                 
-                # Save with compression
-                save_kwargs = {'quality': quality, 'optimize': True}
                 if save_format == 'PNG':
-                    save_kwargs = {'optimize': True}
+                    # Lossy PNG compression via color quantization
+                    # TinyPNG uses this technique - reduce to 256 colors or less
                     
-                img.save(output_path, save_format, **save_kwargs)
+                    has_transparency = original_mode in ('RGBA', 'LA', 'PA') or \
+                                      (original_mode == 'P' and 'transparency' in img.info)
+                    
+                    if has_transparency:
+                        # For transparent PNGs - convert to RGBA then quantize
+                        if img.mode != 'RGBA':
+                            img = img.convert('RGBA')
+                        
+                        # Quantize with transparency - use adaptive palette
+                        # Lower quality = fewer colors = smaller file
+                        num_colors = max(16, int(256 * (quality / 100)))
+                        
+                        # Split into RGB and Alpha
+                        r, g, b, a = img.split()
+                        rgb_img = Image.merge('RGB', (r, g, b))
+                        
+                        # Quantize RGB
+                        rgb_quantized = rgb_img.quantize(colors=num_colors, method=Image.Quantize.MEDIANCUT)
+                        rgb_quantized = rgb_quantized.convert('RGB')
+                        
+                        # Merge back with alpha
+                        r2, g2, b2 = rgb_quantized.split()
+                        img = Image.merge('RGBA', (r2, g2, b2, a))
+                        
+                    else:
+                        # For non-transparent PNGs - convert to palette mode
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        
+                        # Quantize to reduce colors (lossy compression)
+                        num_colors = max(16, int(256 * (quality / 100)))
+                        img = img.quantize(colors=num_colors, method=Image.Quantize.MEDIANCUT)
+                        img = img.convert('RGB')  # Convert back for better compatibility
+                    
+                    # Save with maximum compression
+                    img.save(output_path, 'PNG', optimize=True, compress_level=9)
+                    
+                elif save_format == 'JPEG':
+                    # Convert to RGB for JPEG
+                    if img.mode in ('RGBA', 'LA', 'P'):
+                        background = Image.new('RGB', img.size, (255, 255, 255))
+                        if img.mode == 'P':
+                            img = img.convert('RGBA')
+                        if img.mode == 'RGBA':
+                            background.paste(img, mask=img.split()[-1])
+                        img = background
+                    elif img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    
+                    # Aggressive JPEG compression
+                    # Use subsampling and optimize
+                    img.save(output_path, 'JPEG', 
+                            quality=quality, 
+                            optimize=True,
+                            progressive=True,
+                            subsampling='4:2:0')  # More aggressive chroma subsampling
+                    
+                elif save_format == 'WEBP':
+                    # WebP has excellent compression
+                    # Use lossy mode with quality setting
+                    if img.mode == 'P':
+                        img = img.convert('RGBA' if 'transparency' in img.info else 'RGB')
+                    
+                    img.save(output_path, 'WEBP', 
+                            quality=quality, 
+                            method=6,  # Slowest but best compression
+                            lossless=False)
                 
                 # Get compressed size
                 compressed_size = os.path.getsize(output_path)
@@ -701,6 +760,8 @@ class ImageCompressor:
                 
             except Exception as e:
                 print(f"Error compressing {filepath}: {e}")
+                import traceback
+                traceback.print_exc()
                 
         # Update final stats
         orig_mb = self.total_original / (1024 * 1024)
