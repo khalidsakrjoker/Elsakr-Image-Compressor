@@ -18,7 +18,7 @@
 
 ## 📸 Screenshot
 
-![Elsakr Image Compressor](assets/screenshot.png)
+![Elsakr Image Compressor](assets/Screenshot.png)
 
 ## 🚀 Quick Start
 
